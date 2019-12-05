@@ -1,6 +1,6 @@
 # Training on Windows
 
-The training pipeline resides in `tf`. I have documented the changes I made to get the training pipeline to run under Windows. I have also created some python scripts help with fetching and processing the self-play game files.
+The training pipeline resides in `tf`. I have documented the changes I made to get the training pipeline to run under Windows. I have also created some python scripts to help with fetching and processing the self-play game files.
 
 ## Installation
 

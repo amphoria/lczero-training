@@ -1,6 +1,6 @@
-# Training
+# Training on Windows
 
-The training pipeline resides in `tf`, this requires tensorflow running on linux (Ubuntu 16.04 in this case). (It can be made to work on windows too, but it takes more effort.)
+The training pipeline resides in `tf`. I have documented the changes I made to get the training pipeline to run under Windows. I have also created some python scripts help with fetching and processing the self-play game files.
 
 ## Installation
 

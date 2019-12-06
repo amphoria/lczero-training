@@ -112,13 +112,14 @@ def main(cmd):
     split_batch_size = total_batch_size // batch_splits
     # Load data with split batch size, which will be combined to the total batch size in tfprocess.
     ChunkParser.BATCH_SIZE = split_batch_size
+    workers = cfg['training'].get('workers', None)
 
     root_dir = os.path.join(cfg['training']['path'], cfg['name'])
     if not os.path.exists(root_dir):
         os.makedirs(root_dir)
 
     train_parser = ChunkParser(FileDataSrc(train_chunks),
-            shuffle_size=shuffle_size, sample=SKIP, batch_size=ChunkParser.BATCH_SIZE)
+            shuffle_size=shuffle_size, sample=SKIP, batch_size=ChunkParser.BATCH_SIZE, workers=workers)
     dataset = tf.data.Dataset.from_generator(
         train_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
     dataset = dataset.map(ChunkParser.parse_function)
@@ -127,7 +128,7 @@ def main(cmd):
 
     shuffle_size = int(shuffle_size*(1.0-train_ratio))
     test_parser = ChunkParser(FileDataSrc(test_chunks),
-            shuffle_size=shuffle_size, sample=SKIP, batch_size=ChunkParser.BATCH_SIZE)
+            shuffle_size=shuffle_size, sample=SKIP, batch_size=ChunkParser.BATCH_SIZE, workers=workers)
     dataset = tf.data.Dataset.from_generator(
         test_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
     dataset = dataset.map(ChunkParser.parse_function)

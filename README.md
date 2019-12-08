@@ -1,10 +1,36 @@
 # Training on Windows
 
-The training pipeline resides in `tf`. I have documented the changes I made to get the training pipeline to run under Windows. I have also created some python scripts to help with fetching and processing the self-play game files.
+The training pipeline resides in `tf`. I have documented the changes I made to get the training pipeline to run under Windows. I have also created some python scripts to help with fetching and processing the self-play game files. 
 
 ## Installation
 
-Install the requirements under `tf/requirements.txt`. And call `./init.sh` to compile the protobuf files.
+The version of tensorflow used in the training pipeline requires python 3.6. On Windows it is easiest to set up the required python 3.6 environment using Miniconda. My thanks go to dkappe for the first part of this procedure which I obtained from https://github.com/dkappe/leela-chess-weights/wiki/Leela-Chess-Zero-supervised-learning---easy-start-for-Windows-users.
+
+Step 0. Clone or download my fork of LeelaChessZero/lczero-training from https://github.com/amphoria/lczero-training.
+
+Step 1. From the lczero-common page on the LeelaChessZero Github download lczero-common-master.zip and unzip the contents of lczero-common-master into libs\lczero-common. This should now contain one folder called proto.
+
+Step 2. Obtain the protobuf compiler (protoc) for Win64 from the protobuf website https://developers.google.com/protocol-buffers/docs/downloads and unzip protoc.exe into lczero-training. Then run the following commands to compile the protbuf files, and finally create an empty file __init__.py in tf\proto.
+
+```
+protoc --proto_path=libs/lczero-common --python_out=tf libs/lczero-common/proto/net.proto
+protoc --proto_path=libs/lczero-common --python_out=tf libs/lczero-common/proto/net.proto
+
+```
+
+Step 3. Obtain the Miniconda installer for 64-bit Windows from https://docs.conda.io/en/latest/miniconda.html. It is OK to use the Python 3.7 (or later) version as we will be creating a Python 3.6 environment. Install this following the instructions.
+
+Step 4. Open an Anaconda prompt for Miniconda3 from the Windows start menu and create a python 3.6 environment with the following command:
+```
+conda create --name py36 python=3.6
+```
+
+Step 5. Activate the python 3.6 environment and install Tensorflow for GPU with the following Anaconda commands:
+```
+conda activate py36
+conda install tensorflow-gpu=1.12
+```
+This will install tensorflow 1.12.2, CUDA, cudnn and any required python packages. tensorflow 1.13 is also supposed to work but I have not tried this. At the end install pyyaml with conda install pyyaml as another version is installed by default.
 
 ## Data preparation
 
@@ -14,8 +40,6 @@ In order to start a training session you first need to download trainingdata fro
 tar -xzf games11160000.tar.gz
 ls training.* | parallel gzip {}
 ```
-
-This repacks each chunk into a gzipped file ready to be parsed by the training pipeline. Note that the `parallel` command uses all your cores and can be installed with `apt-get install parallel`.
 
 ## Training pipeline
 

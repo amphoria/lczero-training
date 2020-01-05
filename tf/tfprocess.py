@@ -556,11 +556,11 @@ class TFProcess:
             sum_value_accuracy *= 100
         # Additionally rescale to [0, 1] so divide by 4
         sum_mse /= (4.0 * test_batches)
-        self.net.pb.training_params.learning_rate = self.lr
-        self.net.pb.training_params.mse_loss = sum_mse
-        self.net.pb.training_params.policy_loss = sum_policy
+        self.net.pb.training_params.learning_rate = tf.convert_to_tensor(self.lr).numpy()
+        self.net.pb.training_params.mse_loss = sum_mse.numpy()
+        self.net.pb.training_params.policy_loss = sum_policy.numpy()
         # TODO store value and value accuracy in pb
-        self.net.pb.training_params.accuracy = sum_policy_accuracy
+        self.net.pb.training_params.accuracy = sum_policy_accuracy.numpy()
         with self.test_writer.as_default():
             tf.summary.scalar("Policy Loss", sum_policy, step=steps)
             tf.summary.scalar("Value Loss", sum_value, step=steps)

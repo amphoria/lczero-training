@@ -30,7 +30,18 @@ from chunkparser import ChunkParser
 
 SKIP = 32
 
+lockfile = str(Path.home()) + '\\.lc0.lck'
 
+def lock_chunk_updates(lockfile):
+    while Path(lockfile).exists():
+        print("Lockfile exists ... sleeping for 60 secs")
+        time.sleep(60)
+    Path(lockfile).touch()
+
+def allow_chunk_updates(lockfile):
+    if Path(lockfile).exists():
+        Path(lockfile).unlink()
+        
 def get_chunks(data_prefix):
     return glob.glob(data_prefix + "*.gz")
 
@@ -127,86 +138,92 @@ def main(cmd):
     cfg = yaml.safe_load(cmd.cfg.read())
     print(yaml.dump(cfg, default_flow_style=False))
 
-    num_chunks = cfg['dataset']['num_chunks']
-    allow_less = cfg['dataset'].get('allow_less_chunks', False)
-    train_ratio = cfg['dataset']['train_ratio']
-    experimental_parser = cfg['dataset'].get('experimental_v4_only_dataset', False)
-    num_train = int(num_chunks*train_ratio)
-    num_test = num_chunks - num_train
-    if 'input_test' in cfg['dataset']:
-        train_chunks = get_latest_chunks(cfg['dataset']['input_train'], num_train, allow_less)
-        test_chunks = get_latest_chunks(cfg['dataset']['input_test'], num_test, allow_less)
-    else:
-        chunks = get_latest_chunks(cfg['dataset']['input'], num_chunks, allow_less)
-        if allow_less:
-            num_train = int(len(chunks)*train_ratio)
-            num_test = len(chunks) - num_train
-        train_chunks = chunks[:num_train]
-        test_chunks = chunks[num_train:]
+    try:
+        lock_chunk_updates(lockfile)
 
-    shuffle_size = cfg['training']['shuffle_size']
-    total_batch_size = cfg['training']['batch_size']
-    batch_splits = cfg['training'].get('num_batch_splits', 1)
-    train_workers = cfg['dataset'].get('train_workers', None)
-    test_workers = cfg['dataset'].get('test_workers', None)
-    if total_batch_size % batch_splits != 0:
-        raise ValueError('num_batch_splits must divide batch_size evenly')
-    split_batch_size = total_batch_size // batch_splits
-    # Load data with split batch size, which will be combined to the total batch size in tfprocess.
-    ChunkParser.BATCH_SIZE = split_batch_size
+        num_chunks = cfg['dataset']['num_chunks']
+        allow_less = cfg['dataset'].get('allow_less_chunks', False)
+        train_ratio = cfg['dataset']['train_ratio']
+        experimental_parser = cfg['dataset'].get('experimental_v4_only_dataset', False)
+        num_train = int(num_chunks*train_ratio)
+        num_test = num_chunks - num_train
+        if 'input_test' in cfg['dataset']:
+            train_chunks = get_latest_chunks(cfg['dataset']['input_train'], num_train, allow_less)
+            test_chunks = get_latest_chunks(cfg['dataset']['input_test'], num_test, allow_less)
+        else:
+            chunks = get_latest_chunks(cfg['dataset']['input'], num_chunks, allow_less)
+            if allow_less:
+                num_train = int(len(chunks)*train_ratio)
+                num_test = len(chunks) - num_train
+            train_chunks = chunks[:num_train]
+            test_chunks = chunks[num_train:]
 
-    root_dir = os.path.join(cfg['training']['path'], cfg['name'])
-    if not os.path.exists(root_dir):
-        os.makedirs(root_dir)
-    tfprocess = TFProcess(cfg)
+        shuffle_size = cfg['training']['shuffle_size']
+        total_batch_size = cfg['training']['batch_size']
+        batch_splits = cfg['training'].get('num_batch_splits', 1)
+        train_workers = cfg['dataset'].get('train_workers', None)
+        test_workers = cfg['dataset'].get('test_workers', None)
+        if total_batch_size % batch_splits != 0:
+            raise ValueError('num_batch_splits must divide batch_size evenly')
+        split_batch_size = total_batch_size // batch_splits
+        # Load data with split batch size, which will be combined to the total batch size in tfprocess.
+        ChunkParser.BATCH_SIZE = split_batch_size
 
-    if experimental_parser:
-        train_dataset = tf.data.Dataset.from_tensor_slices(train_chunks).shuffle(len(train_chunks)).repeat()\
-                         .interleave(lambda x: tf.data.FixedLengthRecordDataset(x, 8292, compression_type='GZIP', num_parallel_reads=1).filter(sample), num_parallel_calls=tf.data.experimental.AUTOTUNE)\
-                         .shuffle(shuffle_size)\
-                         .batch(split_batch_size).map(extract_inputs_outputs).prefetch(4)
-    else:
-        train_parser = ChunkParser(FileDataSrc(train_chunks),
-                shuffle_size=shuffle_size, sample=SKIP, batch_size=ChunkParser.BATCH_SIZE,
-                workers=train_workers)
-        train_dataset = tf.data.Dataset.from_generator(
-            train_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
-        train_dataset = train_dataset.map(ChunkParser.parse_function)
-        train_dataset = train_dataset.prefetch(4)
+        root_dir = os.path.join(cfg['training']['path'], cfg['name'])
+        if not os.path.exists(root_dir):
+            os.makedirs(root_dir)
+        tfprocess = TFProcess(cfg)
 
-    shuffle_size = int(shuffle_size*(1.0-train_ratio))
-    if experimental_parser:
-        test_dataset = tf.data.Dataset.from_tensor_slices(test_chunks).shuffle(len(test_chunks)).repeat()\
-                         .interleave(lambda x: tf.data.FixedLengthRecordDataset(x, 8292, compression_type='GZIP', num_parallel_reads=1).filter(sample), num_parallel_calls=tf.data.experimental.AUTOTUNE)\
-                         .shuffle(shuffle_size)\
-                         .batch(split_batch_size).map(extract_inputs_outputs).prefetch(4)
-    else:
-        test_parser = ChunkParser(FileDataSrc(test_chunks),
-                shuffle_size=shuffle_size, sample=SKIP, batch_size=ChunkParser.BATCH_SIZE,
-                workers=test_workers)
-        test_dataset = tf.data.Dataset.from_generator(
-            test_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
-        test_dataset = test_dataset.map(ChunkParser.parse_function)
-        test_dataset = test_dataset.prefetch(4)
+        if experimental_parser:
+            train_dataset = tf.data.Dataset.from_tensor_slices(train_chunks).shuffle(len(train_chunks)).repeat()\
+                             .interleave(lambda x: tf.data.FixedLengthRecordDataset(x, 8292, compression_type='GZIP', num_parallel_reads=1).filter(sample), num_parallel_calls=tf.data.experimental.AUTOTUNE)\
+                             .shuffle(shuffle_size)\
+                             .batch(split_batch_size).map(extract_inputs_outputs).prefetch(4)
+        else:
+            train_parser = ChunkParser(FileDataSrc(train_chunks),
+                    shuffle_size=shuffle_size, sample=SKIP, batch_size=ChunkParser.BATCH_SIZE,
+                    workers=train_workers)
+            train_dataset = tf.data.Dataset.from_generator(
+                train_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
+            train_dataset = train_dataset.map(ChunkParser.parse_function)
+            train_dataset = train_dataset.prefetch(4)
 
-    validation_dataset = None
-    if 'input_validation' in cfg['dataset']:
-        valid_chunks = get_all_chunks(cfg['dataset']['input_validation'])
-        validation_dataset = tf.data.FixedLengthRecordDataset(valid_chunks, 8292, compression_type='GZIP', num_parallel_reads=1)\
-                               .batch(split_batch_size, drop_remainder=True).map(extract_inputs_outputs).prefetch(4)
+        shuffle_size = int(shuffle_size*(1.0-train_ratio))
+        if experimental_parser:
+            test_dataset = tf.data.Dataset.from_tensor_slices(test_chunks).shuffle(len(test_chunks)).repeat()\
+                             .interleave(lambda x: tf.data.FixedLengthRecordDataset(x, 8292, compression_type='GZIP', num_parallel_reads=1).filter(sample), num_parallel_calls=tf.data.experimental.AUTOTUNE)\
+                             .shuffle(shuffle_size)\
+                             .batch(split_batch_size).map(extract_inputs_outputs).prefetch(4)
+        else:
+            test_parser = ChunkParser(FileDataSrc(test_chunks),
+                    shuffle_size=shuffle_size, sample=SKIP, batch_size=ChunkParser.BATCH_SIZE,
+                    workers=test_workers)
+            test_dataset = tf.data.Dataset.from_generator(
+                test_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
+            test_dataset = test_dataset.map(ChunkParser.parse_function)
+            test_dataset = test_dataset.prefetch(4)
 
-    tfprocess.init_v2(train_dataset, test_dataset, validation_dataset)
+        validation_dataset = None
+        if 'input_validation' in cfg['dataset']:
+            valid_chunks = get_all_chunks(cfg['dataset']['input_validation'])
+            validation_dataset = tf.data.FixedLengthRecordDataset(valid_chunks, 8292, compression_type='GZIP', num_parallel_reads=1)\
+                                   .batch(split_batch_size, drop_remainder=True).map(extract_inputs_outputs).prefetch(4)
 
-    tfprocess.restore_v2()
+        tfprocess.init_v2(train_dataset, test_dataset, validation_dataset)
 
-    # If number of test positions is not given
-    # sweeps through all test chunks statistically
-    # Assumes average of 10 samples per test game.
-    # For simplicity, testing can use the split batch size instead of total batch size.
-    # This does not affect results, because test results are simple averages that are independent of batch size.
-    num_evals = cfg['training'].get('num_test_positions', len(test_chunks) * 10)
-    num_evals = max(1, num_evals // ChunkParser.BATCH_SIZE)
-    print("Using {} evaluation batches".format(num_evals))
+        tfprocess.restore_v2()
+
+        # If number of test positions is not given
+        # sweeps through all test chunks statistically
+        # Assumes average of 10 samples per test game.
+        # For simplicity, testing can use the split batch size instead of total batch size.
+        # This does not affect results, because test results are simple averages that are independent of batch size.
+        num_evals = cfg['training'].get('num_test_positions', len(test_chunks) * 10)
+        num_evals = max(1, num_evals // ChunkParser.BATCH_SIZE)
+        print("Using {} evaluation batches".format(num_evals))
+
+    finally:
+        allow_chunk_updates(lockfile)
 
     tfprocess.process_loop_v2(total_batch_size, num_evals, batch_splits=batch_splits)
 

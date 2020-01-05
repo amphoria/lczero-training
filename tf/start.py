@@ -4,15 +4,19 @@ import pathlib
 import subprocess
 import shutil
 import glob
+import time
+from datetime import datetime
+from pathlib import Path
 
-NETARCHS = ["dm-128x10"]
+NETARCHS = ["t58-128x10"]
 
-SOUR = "F:/lczero/files/"
-DEST = "F:/lczero/data"
+SOUR = "M:\\lczero\\chunks\\"
+DATA = "F:\\lczero\\data"
+gamefile = str(Path.home()) + '\\.lc0.dat'
+lockfile = str(Path.home()) + '\\.lc0.lck'
 
 def get_chunks(data_prefix):
     return glob.glob(data_prefix + "training.*.gz")
-
 
 def get_oldest_chunks(path, num_chunks):
     chunks = []
@@ -26,40 +30,55 @@ def get_oldest_chunks(path, num_chunks):
     print("Moving {} - {}".format(os.path.basename(chunks[0]), os.path.basename(chunks[-1])))
     return chunks
 
-
 def train(config_file):
     subprocess.run(["python", "train.py", "--cfg", config_file], check=True)
+
+def timestamp():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
 
 def main(cmd):
 
+    if Path(gamefile).exists():
+        fg = open(gamefile, "r")
+        game_num = int(fg.read())
+        fg.close
+        file = "training." + str(game_num) + ".gz"
+        print("Starting with " + file + " as last game in window")
+    else:
+        print("File " + gamefile + " must contain a single number ... exiting")
+        return
+
     stopfile = pathlib.Path("stopfile.txt")
-    while (not stopfile.exists()):
+    while (True):
 
-        if (not cmd.skipfirstmove):
-            # move next game files to data dir
-            print("Moving " + str(cmd.games) + " games from " + SOUR + " to " + DEST)
-            chunks = get_oldest_chunks(SOUR, cmd.games)
-
-            # stop if not enough chunks
-            if (len(chunks) < cmd.games):
-                print("Not enough chunks...stopping.")
-                break;
+        if Path(stopfile).exists():
+            print("stopfile exists ... stopping")
+            break
             
-            for chunk in chunks:
-                shutil.move(chunk, DEST)
-        else:
-            cmd.skipfirstmove = False
+        if Path(DATA + "\\" + file).exists():
+            # update game file so that get_chunks.py can extract next batch
+            game_num += cmd.games
+            fg = open(gamefile, "w")
+            fg.write(str(game_num))
+            fg.close()
 
-        # train all networks
-        for arch in NETARCHS:
-            print("Training " + arch)
-            train(arch + ".yaml")
+            # train all networks
+            for arch in NETARCHS:
+                print("Training " + arch)
+                train(arch + ".yaml")
+            
+            # wait for next cycle
+            file = "training." + str(game_num) + ".gz"
+            print("Waiting for " + file)
+        else:
+            os.write(1, b'.')
+            time.sleep(60)
+        
             
 
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description='Starts a training pipeline')
     argparser.add_argument('-g', '--games', type=int, required=True, help="The number of games between training cycles")
-    argparser.add_argument('-s', '--skipfirstmove', action='store_true', help="Skip the first file move operation")
 
     main(argparser.parse_args())

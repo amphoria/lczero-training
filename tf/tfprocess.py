@@ -121,11 +121,12 @@ class TFProcess:
 
         self.global_step = tf.Variable(0, name='global_step', trainable=False, dtype=tf.int64)
 
-    def init_v2(self, train_dataset, test_dataset):
+    def init_v2(self, train_dataset, test_dataset, validation_dataset=None):
         self.train_dataset = train_dataset
         self.train_iter = iter(train_dataset)
         self.test_dataset = test_dataset
         self.test_iter = iter(test_dataset)
+        self.validation_dataset = validation_dataset
         self.init_net_v2()
 
     def init_net_v2(self):
@@ -139,7 +140,7 @@ class TFProcess:
         if self.swa_enabled:
             # Count of networks accumulated into SWA
             self.swa_weights = [tf.Variable(w, trainable=False) for w in self.model.weights]
-        
+
         self.active_lr = 0.01
         self.optimizer = tf.keras.optimizers.SGD(learning_rate=lambda: self.active_lr, momentum=0.9, nesterov=True)
         self.orig_optimizer = self.optimizer
@@ -210,7 +211,7 @@ class TFProcess:
             output = tf.cast(output, tf.float32)
             return tf.reduce_mean(tf.cast(tf.equal(tf.argmax(input=target, axis=1), tf.argmax(input=output, axis=1)), tf.float32))
         self.accuracy_fn = accuracy
-       
+
         self.avg_policy_loss = []
         self.avg_value_loss = []
         self.avg_mse_loss = []
@@ -225,13 +226,17 @@ class TFProcess:
             os.path.join(os.getcwd(), "leelalogs/{}-test".format(self.cfg['name'])))
         self.train_writer = tf.summary.create_file_writer(
             os.path.join(os.getcwd(), "leelalogs/{}-train".format(self.cfg['name'])))
+        self.validation_writer = tf.summary.create_file_writer(
+            os.path.join(os.getcwd(), "leelalogs/{}-validation".format(self.cfg['name'])))
         if self.swa_enabled:
             self.swa_writer = tf.summary.create_file_writer(
                 os.path.join(os.getcwd(), "leelalogs/{}-swa-test".format(self.cfg['name'])))
+            self.swa_validation_writer = tf.summary.create_file_writer(
+                os.path.join(os.getcwd(), "leelalogs/{}-swa-validation".format(self.cfg['name'])))
         self.checkpoint = tf.train.Checkpoint(optimizer=self.orig_optimizer, model=self.model, global_step=self.global_step, swa_count=self.swa_count)
         self.checkpoint.listed = self.swa_weights
         self.manager = tf.train.CheckpointManager(
-            self.checkpoint, directory=self.root_dir, max_to_keep=50, keep_checkpoint_every_n_hours=24)
+            self.checkpoint, directory=self.root_dir, max_to_keep=50, keep_checkpoint_every_n_hours=24, checkpoint_name=self.cfg['name'])
 
     def replace_weights_v2(self, new_weights_orig):
         new_weights = [w for w in new_weights_orig]
@@ -350,7 +355,7 @@ class TFProcess:
     def process_inner_loop(self, x, y, z, q):
         with tf.GradientTape() as tape:
             policy, value = self.model(x, training=True)
-            policy_loss = self.policy_loss_fn(y, policy)                    
+            policy_loss = self.policy_loss_fn(y, policy)
             reg_term = sum(self.model.losses)
             if self.wdl:
                 value_loss = self.value_loss_fn(self.qMix(z, q), value)
@@ -481,20 +486,25 @@ class TFProcess:
             if self.swa_enabled:
                 self.calculate_swa_summaries_v2(test_batches, steps)
 
+        if self.validation_dataset is not None and (steps % self.cfg['training']['validation_steps'] == 0 or steps % self.cfg['training']['total_steps'] == 0):
+            if self.swa_enabled:
+                self.calculate_swa_validations_v2(steps)
+            else:
+                self.calculate_test_validations_v2(steps)
+
         # Save session and weights at end, and also optionally every 'checkpoint_steps'.
         if steps % self.cfg['training']['total_steps'] == 0 or (
                 'checkpoint_steps' in self.cfg['training'] and steps % self.cfg['training']['checkpoint_steps'] == 0):
-            self.manager.save()
-            print("Model saved in file: {}".format(self.manager.latest_checkpoint))
             evaled_steps = steps.numpy()
-            leela_path = self.manager.latest_checkpoint + "-" + str(evaled_steps)
-            swa_path = self.manager.latest_checkpoint + "-swa-" + str(evaled_steps)
+            self.manager.save(checkpoint_number=evaled_steps)
+            print("Model saved in file: {}".format(self.manager.latest_checkpoint))
+            path = os.path.join(self.root_dir, self.cfg['name'])
+            leela_path = path + "-" + str(evaled_steps)
+            swa_path = path + "-swa-" + str(evaled_steps)
             self.net.pb.training_params.training_steps = evaled_steps
             self.save_leelaz_weights_v2(leela_path)
-            print("Weights saved in file: {}".format(leela_path))
             if self.swa_enabled:
                 self.save_swa_weights_v2(swa_path)
-                print("SWA Weights saved in file: {}".format(swa_path))
 
     def calculate_swa_summaries_v2(self, test_batches, steps):
         backup = self.read_weights()
@@ -559,10 +569,58 @@ class TFProcess:
             if self.wdl:
                 tf.summary.scalar("Value Accuracy", sum_value_accuracy, step=steps)
             for w in self.model.weights:
-                tf.summary.histogram(w.name, w, buckets=1000, step=steps)
+                tf.summary.histogram(w.name, w, step=steps)
         self.test_writer.flush()
 
         print("step {}, policy={:g} value={:g} policy accuracy={:g}% value accuracy={:g}% mse={:g}".\
+            format(steps, sum_policy, sum_value, sum_policy_accuracy, sum_value_accuracy, sum_mse))
+
+    def calculate_swa_validations_v2(self, steps):
+        backup = self.read_weights()
+        for (swa, w) in zip(self.swa_weights, self.model.weights):
+            w.assign(swa.read_value())
+        true_validation_writer, self.validation_writer = self.validation_writer, self.swa_validation_writer
+        print('swa', end=' ')
+        self.calculate_test_validations_v2(steps)
+        self.validation_writer = true_validation_writer
+        for (old, w) in zip(backup, self.model.weights):
+            w.assign(old)
+
+    def calculate_test_validations_v2(self, steps):
+        sum_policy_accuracy = 0
+        sum_value_accuracy = 0
+        sum_mse = 0
+        sum_policy = 0
+        sum_value = 0
+        counter = 0
+        for (x,y,z,q) in self.validation_dataset:
+            policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy = self.calculate_test_summaries_inner_loop(x, y, z, q)
+            sum_policy_accuracy += policy_accuracy
+            sum_mse += mse_loss
+            sum_policy += policy_loss
+            counter += 1
+            if self.wdl:
+                sum_value_accuracy += value_accuracy
+                sum_value += value_loss
+        sum_policy_accuracy /= counter
+        sum_policy_accuracy *= 100
+        sum_policy /= counter
+        sum_value /= counter
+        if self.wdl:
+            sum_value_accuracy /= counter
+            sum_value_accuracy *= 100
+        # Additionally rescale to [0, 1] so divide by 4
+        sum_mse /= (4.0 * counter)
+        with self.validation_writer.as_default():
+            tf.summary.scalar("Policy Loss", sum_policy, step=steps)
+            tf.summary.scalar("Value Loss", sum_value, step=steps)
+            tf.summary.scalar("MSE Loss", sum_mse, step=steps)
+            tf.summary.scalar("Policy Accuracy", sum_policy_accuracy, step=steps)
+            if self.wdl:
+                tf.summary.scalar("Value Accuracy", sum_value_accuracy, step=steps)
+        self.validation_writer.flush()
+
+        print("step {}, validation: policy={:g} value={:g} policy accuracy={:g}% value accuracy={:g}% mse={:g}".\
             format(steps, sum_policy, sum_value, sum_policy_accuracy, sum_value_accuracy, sum_mse))
 
     @tf.function()
@@ -691,10 +749,10 @@ class TFProcess:
             return tf.keras.layers.BatchNormalization(
                 epsilon=1e-5, axis=1, fused=False, center=True,
                 scale=scale, virtual_batch_size=64)(input)
-            
+
     def squeeze_excitation_v2(self, inputs, channels):
         assert channels % self.SE_ratio == 0
-        
+
         pooled = tf.keras.layers.GlobalAveragePooling2D(data_format='channels_first')(inputs)
         squeezed = tf.keras.layers.Activation('relu')(tf.keras.layers.Dense(channels // self.SE_ratio, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg)(pooled))
         excited = tf.keras.layers.Dense(2 * channels, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg)(squeezed)
@@ -710,7 +768,7 @@ class TFProcess:
         conv2 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format='channels_first')(out1)
         out2 = self.squeeze_excitation_v2(self.batch_norm_v2(conv2, scale=True), channels)
         return tf.keras.layers.Activation('relu')(tf.keras.layers.add([inputs, out2]))
-        
+
     def construct_net_v2(self, inputs):
         flow = self.conv_block_v2(inputs, filter_size=3, output_channels=self.RESIDUAL_FILTERS, bn_scale=True)
         for _ in range(0, self.RESIDUAL_BLOCKS):
@@ -737,4 +795,4 @@ class TFProcess:
         else:
             h_fc3 = tf.keras.layers.Dense(1, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, activation='tanh')(h_fc2)
         return h_fc1, h_fc3
-        
+
